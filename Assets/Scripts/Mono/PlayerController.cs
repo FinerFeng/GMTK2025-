@@ -2,13 +2,13 @@ using System.Collections;
 using UnityEngine;
 using System.Collections.Generic;
 
-public class PlayerController : MonoBehaviour // 脚本名已改为 PlayerController
+public class PlayerController : MonoBehaviour
 {
     [Header("Sprite Prefabs")]
-    public GameObject keyA_Prefab; // 拖拽你的 A 键 Sprite Prefab 到这里
-    public GameObject keyD_Prefab; // 拖拽你的 D 键 Sprite Prefab 到这里
-    public Vector3 keyASpawnPosition; // A 键 Sprite 生成位置
-    public Vector3 keyDSpawnPosition; // D 键 Sprite 生成位置
+    public GameObject keyA_Prefab;
+    public GameObject keyD_Prefab;
+    public Vector3 keyASpawnPosition;
+    public Vector3 keyDSpawnPosition;
 
     private SpriteRenderer keyA_SpriteRenderer;
     private SpriteRenderer keyD_SpriteRenderer;
@@ -18,24 +18,29 @@ public class PlayerController : MonoBehaviour // 脚本名已改为 PlayerContro
     public Color highlightKeyColor = Color.white;
     public Color successKeyColor = Color.green;
     public Color missKeyColor = Color.red;
-    public float feedbackDisplayDuration = 0.1f; // 反馈颜色显示的时长
+    public float feedbackDisplayDuration = 0.2f;
 
     [Header("Rhythm Settings")]
-    public List<RhythmBeat> rhythmSequence;
-    public float beatDetectionWindow = 0.2f;
-    public float beatDisplayLeadTime = 1.0f;
+    public float beatInterval = 1.0f;           // 节拍间隔（秒）
+    public float successWindow = 0.4f;          // 成功按键的时间窗口
+    public float highlightDuration = 0.8f;      // 高亮显示的持续时间
+    public bool infiniteLoop = true;            // 无限循环模式
 
     [Header("Slow Motion Settings")]
-    public float slowMotionDuration = 2f;
-    public float slowMotionTimeScale = 0.2f;
+    public float slowMotionDuration = 1.5f;
+    public float slowMotionTimeScale = 0.3f;
     private float normalTimeScale;
     private float slowMotionTimer = 0f;
     private bool inSlowMotion = false;
 
-    private float songStartTime;
-    private int currentBeatIndex = 0;
+    // 简化的节拍系统
+    private float gameStartTime;
+    private int beatCounter = 0;
+    private bool waitingForInput = false;
+    private KeyCode expectedKey;
+    private float currentBeatStartTime;
 
-    // 用于管理按键颜色反馈的协程引用
+    // 协程引用
     private Coroutine aKeyColorCoroutine;
     private Coroutine dKeyColorCoroutine;
 
@@ -43,7 +48,7 @@ public class PlayerController : MonoBehaviour // 脚本名已改为 PlayerContro
     {
         normalTimeScale = Time.timeScale;
 
-        // 实例化 Sprite Prefab 并获取它们的 SpriteRenderer 组件
+        // 实例化按键视觉
         if (keyA_Prefab != null)
         {
             GameObject aObj = Instantiate(keyA_Prefab, keyASpawnPosition, Quaternion.identity);
@@ -60,20 +65,237 @@ public class PlayerController : MonoBehaviour // 脚本名已改为 PlayerContro
 
     void Start()
     {
-        songStartTime = Time.time;
-        SetKeyColor(KeyCode.A, normalKeyColor); // 初始化 A 键颜色
-        SetKeyColor(KeyCode.D, normalKeyColor); // 初始化 D 键颜色
-
-        if (rhythmSequence.Count == 0) Debug.LogWarning("节奏序列为空！请在Inspector中添加节奏点。");
+        gameStartTime = Time.time;
+        SetAllKeysColor(normalKeyColor);
+        StartNextBeat();
+        Debug.Log("节奏游戏开始！A-D交替，无限循环模式。");
     }
 
     void Update()
     {
         HandleSlowMotion();
-        ProcessRhythmBeats();
+        CheckBeatTiming();
         HandlePlayerInput();
     }
 
+    /// <summary>
+    /// 开始下一个节拍
+    /// </summary>
+    void StartNextBeat()
+    {
+        // A-D交替：偶数为A，奇数为D
+        expectedKey = (beatCounter % 2 == 0) ? KeyCode.A : KeyCode.D;
+        currentBeatStartTime = Time.time;
+        waitingForInput = true;
+
+        Debug.Log($"节拍 {beatCounter}: 期望按键 {expectedKey}，开始时间 {currentBeatStartTime:F2}s");
+
+        // 立即高亮对应按键
+        SetKeyColor(expectedKey, highlightKeyColor);
+
+        beatCounter++;
+    }
+
+    /// <summary>
+    /// 检查节拍时机
+    /// </summary>
+    void CheckBeatTiming()
+    {
+        if (!waitingForInput) return;
+
+        float elapsed = Time.time - currentBeatStartTime;
+
+        // 如果超过成功窗口时间，视为错过
+        if (elapsed > successWindow)
+        {
+            Debug.LogWarning($"错过节拍！耗时: {elapsed:F2}s");
+            OnBeatMissed();
+        }
+    }
+
+    /// <summary>
+    /// 处理玩家输入
+    /// </summary>
+    void HandlePlayerInput()
+    {
+        if (Input.GetKeyDown(KeyCode.A))
+        {
+            OnKeyPressed(KeyCode.A);
+        }
+        else if (Input.GetKeyDown(KeyCode.D))
+        {
+            OnKeyPressed(KeyCode.D);
+        }
+    }
+
+    /// <summary>
+    /// 按键被按下时的处理
+    /// </summary>
+    void OnKeyPressed(KeyCode pressedKey)
+    {
+        if (!waitingForInput)
+        {
+            Debug.LogWarning($"不在等待输入状态，按下了 {pressedKey}");
+            ShowFeedback(pressedKey, missKeyColor);
+            return;
+        }
+
+        float responseTime = Time.time - currentBeatStartTime;
+
+        if (pressedKey == expectedKey)
+        {
+            // 按对了键
+            string performance = GetPerformanceRating(responseTime);
+            Debug.Log($"✅ {performance} 成功！按键: {pressedKey}, 反应时间: {responseTime:F3}s");
+
+            OnBeatSuccess();
+        }
+        else
+        {
+            // 按错了键
+            Debug.LogWarning($"❌ 按错了！期望 {expectedKey}，按下了 {pressedKey}");
+            OnBeatFailed();
+        }
+    }
+
+    /// <summary>
+    /// 根据反应时间评价表现
+    /// </summary>
+    string GetPerformanceRating(float responseTime)
+    {
+        if (responseTime < 0.1f) return "闪电般！⚡";
+        else if (responseTime < 0.2f) return "完美！⭐⭐⭐";
+        else if (responseTime < 0.3f) return "很好！⭐⭐";
+        else return "不错！⭐";
+    }
+
+    /// <summary>
+    /// 节拍成功
+    /// </summary>
+    void OnBeatSuccess()
+    {
+        waitingForInput = false;
+        ShowFeedback(expectedKey, successKeyColor);
+
+        // 等待间隔后开始下一个节拍
+        StartCoroutine(WaitForNextBeat());
+    }
+
+    /// <summary>
+    /// 节拍失败（按错键）
+    /// </summary>
+    void OnBeatFailed()
+    {
+        waitingForInput = false;
+        ShowFeedback(expectedKey, missKeyColor);
+        StartSlowMotion();
+
+        // 等待间隔后开始下一个节拍
+        StartCoroutine(WaitForNextBeat());
+    }
+
+    /// <summary>
+    /// 错过节拍
+    /// </summary>
+    void OnBeatMissed()
+    {
+        waitingForInput = false;
+        ShowFeedback(expectedKey, missKeyColor);
+        StartSlowMotion();
+
+        // 等待间隔后开始下一个节拍
+        StartCoroutine(WaitForNextBeat());
+    }
+
+    /// <summary>
+    /// 等待下一个节拍
+    /// </summary>
+    IEnumerator WaitForNextBeat()
+    {
+        // 重置所有按键颜色
+        yield return new WaitForSeconds(0.1f);
+        SetAllKeysColor(normalKeyColor);
+
+        // 等待节拍间隔
+        yield return new WaitForSeconds(beatInterval - 0.1f);
+
+        // 开始下一个节拍（如果是无限模式）
+        if (infiniteLoop)
+        {
+            StartNextBeat();
+        }
+        else
+        {
+            Debug.Log("节奏序列结束！");
+        }
+    }
+
+    /// <summary>
+    /// 显示按键反馈
+    /// </summary>
+    void ShowFeedback(KeyCode key, Color color)
+    {
+        if (key == KeyCode.A)
+        {
+            if (aKeyColorCoroutine != null) StopCoroutine(aKeyColorCoroutine);
+            aKeyColorCoroutine = StartCoroutine(ShowColorFeedback(keyA_SpriteRenderer, color));
+        }
+        else if (key == KeyCode.D)
+        {
+            if (dKeyColorCoroutine != null) StopCoroutine(dKeyColorCoroutine);
+            dKeyColorCoroutine = StartCoroutine(ShowColorFeedback(keyD_SpriteRenderer, color));
+        }
+    }
+
+    /// <summary>
+    /// 颜色反馈协程
+    /// </summary>
+    IEnumerator ShowColorFeedback(SpriteRenderer renderer, Color feedbackColor)
+    {
+        if (renderer == null) yield break;
+
+        renderer.color = feedbackColor;
+        yield return new WaitForSeconds(feedbackDisplayDuration);
+        renderer.color = normalKeyColor;
+    }
+
+    /// <summary>
+    /// 设置单个按键颜色
+    /// </summary>
+    void SetKeyColor(KeyCode key, Color color)
+    {
+        if (key == KeyCode.A && keyA_SpriteRenderer != null)
+        {
+            if (aKeyColorCoroutine != null) StopCoroutine(aKeyColorCoroutine);
+            keyA_SpriteRenderer.color = color;
+        }
+        else if (key == KeyCode.D && keyD_SpriteRenderer != null)
+        {
+            if (dKeyColorCoroutine != null) StopCoroutine(dKeyColorCoroutine);
+            keyD_SpriteRenderer.color = color;
+        }
+    }
+
+    /// <summary>
+    /// 设置所有按键颜色
+    /// </summary>
+    void SetAllKeysColor(Color color)
+    {
+        if (keyA_SpriteRenderer != null)
+        {
+            if (aKeyColorCoroutine != null) StopCoroutine(aKeyColorCoroutine);
+            keyA_SpriteRenderer.color = color;
+        }
+        if (keyD_SpriteRenderer != null)
+        {
+            if (dKeyColorCoroutine != null) StopCoroutine(dKeyColorCoroutine);
+            keyD_SpriteRenderer.color = color;
+        }
+    }
+
+    /// <summary>
+    /// 处理慢动作
+    /// </summary>
     void HandleSlowMotion()
     {
         if (inSlowMotion)
@@ -84,133 +306,14 @@ public class PlayerController : MonoBehaviour // 脚本名已改为 PlayerContro
                 Time.timeScale = normalTimeScale;
                 inSlowMotion = false;
                 slowMotionTimer = 0f;
-                Debug.Log("时间恢复正常。");
+                Debug.Log("慢动作结束");
             }
         }
     }
 
-    void ProcessRhythmBeats()
-    {
-        if (currentBeatIndex >= rhythmSequence.Count) return;
-
-        RhythmBeat currentBeat = rhythmSequence[currentBeatIndex];
-        float currentTime = Time.time - songStartTime;
-
-        if (!currentBeat.isProcessed && currentTime >= currentBeat.time - beatDisplayLeadTime && currentTime < currentBeat.time + beatDetectionWindow)
-        {
-            SetKeyColor(currentBeat.requiredKey, highlightKeyColor); // 高亮按键
-        }
-        else if (!currentBeat.isProcessed && currentTime >= currentBeat.time + beatDetectionWindow)
-        {
-            Debug.LogWarning($"节奏点 {currentBeatIndex} ({currentBeat.requiredKey}) 错过！");
-            ShowTemporaryFeedback(currentBeat.requiredKey, missKeyColor); // 显示错过反馈
-            currentBeat.isProcessed = true;
-            currentBeatIndex++;
-        }
-    }
-
-    void HandlePlayerInput()
-    {
-        if (Input.GetKeyDown(KeyCode.A))
-        {
-            CheckBeatHit(KeyCode.A);
-        }
-        else if (Input.GetKeyDown(KeyCode.D))
-        {
-            CheckBeatHit(KeyCode.D);
-        }
-    }
-
-    void CheckBeatHit(KeyCode pressedKey)
-    {
-        if (currentBeatIndex >= rhythmSequence.Count)
-        {
-            ShowTemporaryFeedback(pressedKey, missKeyColor); // 视为错误按下
-            return;
-        }
-
-        RhythmBeat currentBeat = rhythmSequence[currentBeatIndex];
-        float currentTime = Time.time - songStartTime;
-
-        if (currentTime >= currentBeat.time - beatDetectionWindow && currentTime <= currentBeat.time + beatDetectionWindow)
-        {
-            if (pressedKey == currentBeat.requiredKey)
-            {
-                Debug.Log($"成功命中节奏点 {currentBeatIndex} ({pressedKey})！");
-                currentBeat.isHit = true;
-                currentBeat.isProcessed = true;
-                ShowTemporaryFeedback(pressedKey, successKeyColor); // 显示成功反馈
-                currentBeatIndex++;
-            }
-            else
-            {
-                Debug.LogWarning($"按键错误！期望 {currentBeat.requiredKey}，按下了 {pressedKey}");
-                ShowTemporaryFeedback(pressedKey, missKeyColor); // 显示错误反馈
-                StartSlowMotion();
-            }
-        }
-        else
-        {
-            Debug.LogWarning($"按键时机错误！按下了 {pressedKey}，但不在有效窗口内。");
-            ShowTemporaryFeedback(pressedKey, missKeyColor); // 显示错误反馈
-            StartSlowMotion();
-        }
-    }
-
     /// <summary>
-    /// 设置指定按键的颜色。
+    /// 开始慢动作
     /// </summary>
-    void SetKeyColor(KeyCode key, Color color)
-    {
-        if (key == KeyCode.A && keyA_SpriteRenderer != null)
-        {
-            // 停止可能正在运行的 A 键颜色协程
-            if (aKeyColorCoroutine != null) StopCoroutine(aKeyColorCoroutine);
-            keyA_SpriteRenderer.color = color;
-        }
-        else if (key == KeyCode.D && keyD_SpriteRenderer != null)
-        {
-            // 停止可能正在运行的 D 键颜色协程
-            if (dKeyColorCoroutine != null) StopCoroutine(dKeyColorCoroutine);
-            keyD_SpriteRenderer.color = color;
-        }
-    }
-
-    /// <summary>
-    /// 显示短暂的颜色反馈，然后恢复正常颜色。
-    /// </summary>
-    void ShowTemporaryFeedback(KeyCode key, Color feedbackColor)
-    {
-        if (key == KeyCode.A)
-        {
-            // 停止之前的协程以避免冲突
-            if (aKeyColorCoroutine != null) StopCoroutine(aKeyColorCoroutine);
-            aKeyColorCoroutine = StartCoroutine(ChangeKeyColorTemporarily(keyA_SpriteRenderer, feedbackColor));
-        }
-        else if (key == KeyCode.D)
-        {
-            if (dKeyColorCoroutine != null) StopCoroutine(dKeyColorCoroutine);
-            dKeyColorCoroutine = StartCoroutine(ChangeKeyColorTemporarily(keyD_SpriteRenderer, feedbackColor));
-        }
-    }
-
-    /// <summary>
-    /// 协程：短暂改变 SpriteRenderer 的颜色，然后恢复正常。
-    /// </summary>
-    IEnumerator ChangeKeyColorTemporarily(SpriteRenderer targetRenderer, Color tempColor)
-    {
-        if (targetRenderer == null) yield break; // 防止空引用
-
-        Color originalColor = targetRenderer.color; // 记录当前颜色
-        targetRenderer.color = tempColor; // 立即设置为反馈颜色
-
-        yield return new WaitForSeconds(feedbackDisplayDuration); // 等待指定时长
-
-        targetRenderer.color = normalKeyColor; // 恢复正常颜色
-        // 可选：在这里清空协程引用，但由于是临时协程，不清空也影响不大
-        // 如果是 aKeyColorCoroutine 或 dKeyColorCoroutine，在 ShowTemporaryFeedback 中启动前停止并更新即可
-    }
-
     void StartSlowMotion()
     {
         if (!inSlowMotion)
@@ -218,21 +321,46 @@ public class PlayerController : MonoBehaviour // 脚本名已改为 PlayerContro
             Time.timeScale = slowMotionTimeScale;
             inSlowMotion = true;
             slowMotionTimer = 0f;
-            Debug.Log("触发慢放！");
-            // TODO: 播放慢放音效、屏幕特效等
+            Debug.Log("触发慢动作！");
         }
     }
 
-    public void StartNewRhythmSequence(List<RhythmBeat> newSequence)
+    /// <summary>
+    /// 重新开始游戏
+    /// </summary>
+    [ContextMenu("重新开始")]
+    public void RestartGame()
     {
-        rhythmSequence = newSequence;
-        currentBeatIndex = 0;
-        songStartTime = Time.time;
-        SetKeyColor(KeyCode.A, normalKeyColor); // 重置 A 键颜色
-        SetKeyColor(KeyCode.D, normalKeyColor); // 重置 D 键颜色
+        StopAllCoroutines();
+        beatCounter = 0;
+        waitingForInput = false;
         Time.timeScale = normalTimeScale;
         inSlowMotion = false;
         slowMotionTimer = 0f;
-        Debug.Log("新的节奏序列已启动。");
+
+        SetAllKeysColor(normalKeyColor);
+
+        gameStartTime = Time.time;
+        StartNextBeat();
+
+        Debug.Log("游戏重新开始！");
+    }
+
+    /// <summary>
+    /// 暂停/继续游戏
+    /// </summary>
+    [ContextMenu("暂停/继续")]
+    public void TogglePause()
+    {
+        if (Time.timeScale == 0)
+        {
+            Time.timeScale = inSlowMotion ? slowMotionTimeScale : normalTimeScale;
+            Debug.Log("游戏继续");
+        }
+        else
+        {
+            Time.timeScale = 0;
+            Debug.Log("游戏暂停");
+        }
     }
 }
